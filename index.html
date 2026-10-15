@@ -94,8 +94,10 @@ img { display: block; max-width: 100%; }
 
 .chapters { position: absolute; z-index: 3; left: var(--gutter); right: var(--gutter); bottom: clamp(40px, 9vh, 96px); }
 .chapter { max-width: 980px; }
-.js .chapter { position: absolute; left: 0; bottom: 0; opacity: 0; transform: translateY(24px); transition: opacity .5s var(--ease-out), transform .6s var(--ease-out); pointer-events: none; }
-.js .chapter.on { opacity: 1; transform: none; pointer-events: auto; }
+.js .chapter { position: absolute; left: 0; bottom: 0; opacity: 0; transform: translateY(-12px); transition: opacity .22s ease-in, transform .22s ease-in; pointer-events: none; }
+.js .chapter.on { opacity: 1; transform: none; pointer-events: auto; transition: opacity .5s var(--ease-out) .2s, transform .7s var(--ease-out) .2s; }
+.js .chapter:not(.on) { transform: translateY(-12px); }
+.js .chapter.on ~ .chapter:not(.on) { transform: translateY(24px); }
 html:not(.js) .chapter + .chapter { margin-top: 48px; }
 .chapter h1, .chapter h2 {
   font-weight: 300; letter-spacing: -0.045em; line-height: .95;
@@ -596,6 +598,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
@@ -609,25 +613,32 @@ const phone = () => innerWidth < 720;
 let renderer;
 try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); }
 catch { canvas.remove(); throw new Error('WebGL unavailable'); }
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.1;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.localClippingEnabled = true;
 
 const BG = 0x0a0c0f;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG);
 scene.fog = new THREE.Fog(BG, 5, 16);
 const camera = new THREE.PerspectiveCamera(32, 1, 0.02, 60);
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+  pmrem.dispose();
+}
 
 /* ---------- lights: dark studio, cool rim, orange LED spill ---------- */
 scene.add(new THREE.HemisphereLight(0x9fb3c8, 0x050607, 0.35));
 const key = new THREE.DirectionalLight(0xffffff, 2.4);
 key.position.set(3, 5, 4);
 key.castShadow = true;
-key.shadow.mapSize.set(1024, 1024);
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.015;
+key.shadow.radius = 3;
 Object.assign(key.shadow.camera, { left: -2, right: 2, top: 3, bottom: -1, near: 1, far: 15 });
 scene.add(key);
 const rim = new THREE.DirectionalLight(0x9fe3dc, 1.6);
@@ -641,7 +652,14 @@ scene.add(spill);
 const U = 0.0445, RW = 0.6, RD = 1.0, BASE = 0.08;
 const RH = BASE + 42 * U + 0.05;
 const parts = { frame: [], body: [], face: [], dark: [], ledO: [], ledT: [] };
-const box = (kind, w, h, d, x, y, z) => parts[kind].push(new THREE.BoxGeometry(w, h, d).translate(x, y, z));
+const edgeParts = [];
+const BEVEL = { frame: true, body: true, face: true };
+const box = (kind, w, h, d, x, y, z) => {
+  const r = Math.min(Math.min(w, h, d) * 0.22, 0.006);
+  const solid = BEVEL[kind] ? new RoundedBoxGeometry(w, h, d, 2, r) : new THREE.BoxGeometry(w, h, d);
+  parts[kind].push(solid.translate(x, y, z));
+  if (kind !== 'ledO' && kind !== 'ledT') edgeParts.push(new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d).translate(x, y, z)));
+};
 
 for (const sx of [-1, 1]) for (const sz of [-1, 1]) box('frame', 0.035, RH, 0.035, sx * (RW / 2 - 0.0175), RH / 2, sz * (RD / 2 - 0.0175));
 box('frame', RW, 0.05, RD, 0, RH - 0.025, 0);
@@ -674,43 +692,90 @@ for (const h of layout) {
 }
 for (let k = 0; k < 6; k++) box('face', SW, U - 0.004, 0.01, 0, BASE + (40 + (k % 2)) * U, FZ - 0.002 - k * 0.0001);
 
-const solidClip = new THREE.Plane(new THREE.Vector3(0, -1, 0), RH + 0.1);
-const lineClip = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(RH + 0.1));
-const std = (color, metalness, roughness) => new THREE.MeshStandardMaterial({ color, metalness, roughness, clippingPlanes: [solidClip] });
+/* ---------- dissolve: height + 3D noise, a burning edge, lines left behind ---------- */
+const dis = { uCut: { value: -0.4 }, uBand: { value: 0.03 } };
+const FIELD = `
+uniform float uCut; uniform float uBand; varying vec3 vWPos;
+float h3(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float vnoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(h3(i), h3(i + vec3(1,0,0)), f.x), mix(h3(i + vec3(0,1,0)), h3(i + vec3(1,1,0)), f.x), f.y),
+             mix(mix(h3(i + vec3(0,0,1)), h3(i + vec3(1,0,1)), f.x), mix(h3(i + vec3(0,1,1)), h3(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+float field() {
+  float n = vnoise(vWPos * 6.0) * 0.62 + vnoise(vWPos * 21.0) * 0.38;
+  return (${RH.toFixed(4)} - vWPos.y) / ${RH.toFixed(4)} * 0.74 + n * 0.26;
+}`;
+const VARY = shader => {
+  Object.assign(shader.uniforms, dis);
+  shader.vertexShader = 'varying vec3 vWPos;\n' + shader.vertexShader.replace('#include <project_vertex>',
+    '#include <project_vertex>\n vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+  shader.fragmentShader = FIELD + '\n' + shader.fragmentShader;
+};
+const DISSOLVE = '#include <clipping_planes_fragment>\n float fd = field(); if (fd < uCut) discard; float burn = 1.0 - smoothstep(0.0, uBand, fd - uCut);';
+const dissolving = mat => {
+  mat.onBeforeCompile = shader => {
+    VARY(shader);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <clipping_planes_fragment>', DISSOLVE)
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += vec3(1.0, 0.36, 0.1) * burn * 2.4;');
+  };
+  return mat;
+};
+const depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+depthMat.onBeforeCompile = shader => { VARY(shader); shader.fragmentShader = shader.fragmentShader.replace('#include <clipping_planes_fragment>', DISSOLVE); };
+
+const brushed = (() => {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = '#9a9a9a'; g.fillRect(0, 0, 512, 64);
+  for (let i = 0; i < 1400; i++) {
+    const v = 90 + Math.random() * 130 | 0;
+    g.fillStyle = `rgba(${v},${v},${v},0.35)`;
+    g.fillRect(Math.random() * 512, Math.random() * 64, 30 + Math.random() * 240, 1);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+})();
+const std = (color, metalness, roughness, map) => dissolving(new THREE.MeshStandardMaterial({ color, metalness, roughness, roughnessMap: map || null, envMapIntensity: 0.45 }));
 const mats = {
-  frame: std(0x15181d, 0.75, 0.38),
-  body: std(0x1d2128, 0.6, 0.5),
-  face: std(0x3a414b, 0.62, 0.32),
-  dark: std(0x07080a, 0.3, 0.75),
+  frame: std(0x16191e, 0.8, 0.75, brushed),
+  body: std(0x1d2128, 0.6, 0.55),
+  face: std(0x3d444e, 0.7, 0.62, brushed),
+  dark: std(0x07080a, 0.3, 0.8),
   ledO: new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff6b2c).multiplyScalar(5), toneMapped: false }),
   ledT: new THREE.MeshBasicMaterial({ color: new THREE.Color(0x9fe3dc).multiplyScalar(2.2), toneMapped: false }),
 };
 const rack = new THREE.Group();
-const edgeSrc = [];
 for (const [kind, geos] of Object.entries(parts)) {
   const mesh = new THREE.Mesh(mergeGeometries(geos), mats[kind]);
-  mesh.castShadow = mesh.receiveShadow = kind !== 'ledO' && kind !== 'ledT';
+  if (kind !== 'ledO' && kind !== 'ledT') { mesh.castShadow = mesh.receiveShadow = true; mesh.customDepthMaterial = depthMat; }
   rack.add(mesh);
-  if (kind !== 'ledO' && kind !== 'ledT') for (const g of geos) edgeSrc.push(new THREE.EdgesGeometry(g));
 }
-const lineMat = new THREE.LineBasicMaterial({ color: 0x9fe3dc, transparent: true, opacity: 0, clippingPlanes: [lineClip], depthWrite: false });
-rack.add(new THREE.LineSegments(mergeGeometries(edgeSrc), lineMat));
+// lines fade in just behind the burning edge, flaring orange where it passes
+const lineMat = new THREE.LineBasicMaterial({ color: 0x9fe3dc, transparent: true, opacity: 0.6, depthWrite: false, toneMapped: false });
+lineMat.onBeforeCompile = shader => {
+  VARY(shader);
+  shader.fragmentShader = shader.fragmentShader.replace('vec4 diffuseColor = vec4( diffuse, opacity );', `
+    float fd = field();
+    float show = 1.0 - smoothstep(uCut - 0.16, uCut + 0.01, fd);
+    float hot = 1.0 - smoothstep(0.0, 0.05, abs(fd - uCut));
+    vec4 diffuseColor = vec4(mix(diffuse, vec3(1.0, 0.45, 0.16) * 1.4, hot), opacity * max(show, hot * 0.85));
+    if (diffuseColor.a < 0.004) discard;`);
+};
+rack.add(new THREE.LineSegments(mergeGeometries(edgeParts), lineMat));
 scene.add(rack);
 
-// the scan beam that turns metal into lines
-const M = 0.06;
-const ringGeo = new THREE.BufferGeometry().setFromPoints([
-  new THREE.Vector3(-RW / 2 - M, 0, -RD / 2 - M), new THREE.Vector3(RW / 2 + M, 0, -RD / 2 - M),
-  new THREE.Vector3(RW / 2 + M, 0, RD / 2 + M), new THREE.Vector3(-RW / 2 - M, 0, RD / 2 + M),
-]);
-const ringMat = new THREE.LineBasicMaterial({ color: new THREE.Color(0xff6b2c).multiplyScalar(4), transparent: true, opacity: 0, toneMapped: false });
-const ring = new THREE.LineLoop(ringGeo, ringMat);
-scene.add(ring);
-const sheetMat = new THREE.MeshBasicMaterial({ color: 0xff6b2c, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
-const sheet = new THREE.Mesh(new THREE.PlaneGeometry(RW + 2 * M, RD + 2 * M).rotateX(-Math.PI / 2), sheetMat);
-scene.add(sheet);
-
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x0d1013, roughness: 0.92, metalness: 0.1 }));
+// a studio light pool: the floor fades out radially instead of meeting the backdrop in a hard line
+const poolTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), r = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  r.addColorStop(0, '#fff'); r.addColorStop(0.35, '#999'); r.addColorStop(1, '#000');
+  g.fillStyle = r; g.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+})();
+const floor = new THREE.Mesh(new THREE.CircleGeometry(3.2, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x15191e, roughness: 0.85, metalness: 0.2, envMapIntensity: 0.25, alphaMap: poolTex, transparent: true, depthWrite: false }));
 floor.receiveShadow = true;
 scene.add(floor);
 
@@ -792,7 +857,7 @@ function updatePackets(t, camZ) {
 const glowTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const g = c.getContext('2d'), r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  r.addColorStop(0, 'rgba(255,150,90,1)'); r.addColorStop(0.18, 'rgba(255,107,44,0.6)'); r.addColorStop(0.5, 'rgba(255,90,30,0.12)'); r.addColorStop(1, 'rgba(255,90,30,0)');
+  r.addColorStop(0, 'rgba(255,110,50,0.9)'); r.addColorStop(0.18, 'rgba(255,80,20,0.5)'); r.addColorStop(0.5, 'rgba(230,60,10,0.1)'); r.addColorStop(1, 'rgba(230,60,10,0)');
   g.fillStyle = r; g.fillRect(0, 0, 128, 128);
   return new THREE.CanvasTexture(c);
 })();
@@ -801,7 +866,7 @@ const halo = new THREE.Sprite(haloMat);
 halo.position.set(0, YC, CORE_Z - 0.05);
 halo.scale.setScalar(1.1);
 scene.add(halo);
-const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.15, 0.36, 0.1), toneMapped: false, transparent: true, opacity: 0 });
+const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.2, 0.04), fog: false, toneMapped: false, transparent: true, opacity: 0 });
 const core = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), coreMat);
 core.position.set(0, YC, CORE_Z);
 scene.add(core);
@@ -844,9 +909,10 @@ function cameraAt(p, t) {
 }
 
 /* ---------- post: bloom for the LEDs and the core ---------- */
-const composer = new EffectComposer(renderer);
+// a multisampled target keeps MSAA through post-processing, which otherwise drops it
+const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.85, 0.55, 0.9);
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.8, 0.5, 0.92);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
@@ -862,23 +928,19 @@ function resize() {
 }
 
 /* ---------- one frame ---------- */
-let sp = 0;
+let sp = 0, lastNow = 0;
 function render(now) {
   const t = now / 1000;
+  const dt = lastNow ? Math.min(0.05, (now - lastNow) / 1000) : 0.016;
+  lastNow = now;
   const target = window.pipeProgress || 0;
-  sp = reduce ? target : lerp(sp, target, 0.07);
+  sp = reduce ? target : sp + (target - sp) * (1 - Math.exp(-dt * 4.5));
   const p = sp;
 
-  // 1. solid → 2. scan into lines
-  const scan = smooth(0.2, 0.38, p);
-  const sy = lerp(RH + 0.08, -0.06, scan);
-  solidClip.constant = sy;
-  lineClip.constant = -sy;
-  const scanning = scan > 0.001 && scan < 0.999;
-  ring.position.y = sheet.position.y = sy;
-  ringMat.opacity = scanning ? 1 : 0;
-  sheetMat.opacity = scanning ? 0.08 : 0;
-  lineMat.opacity = 0.55 * (1 - smooth(0.56, 0.66, p));
+  // 1. solid → 2. dissolves into lines, top first, along a noisy burning edge
+  const scan = clamp((p - 0.14) / 0.3);
+  dis.uCut.value = lerp(-0.4, 1.35, scan);
+  lineMat.opacity = 0.6 * (1 - smooth(0.56, 0.66, p));
   spill.intensity = 2.2 * (1 - scan);
   key.intensity = 2.4 * (1 - scan * 0.6);
   floor.visible = p < 0.62;
