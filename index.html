@@ -77,7 +77,7 @@ img { display: block; max-width: 100%; }
 /* ---------- hero: the pipeline ---------- */
 .pipe { position: relative; }
 .stage { position: relative; height: 100svh; min-height: 560px; overflow: hidden; background: var(--bg); }
-.js .pipe { height: 520vh; }
+.js .pipe { height: 620vh; }
 .js .stage { position: sticky; top: 0; }
 #flow { position: absolute; inset: 0; width: 100%; height: 100%; }
 .hud { position: absolute; z-index: 2; font: 400 13px/1.5 var(--mono); color: var(--ink-2); }
@@ -506,112 +506,12 @@ app.use((req, res, next) =&gt;
     }
     evt.textContent = fmt.format(Math.round(1000 + progress * progress * 1999999000));
     bar.classList.toggle('solid', r.bottom < 80);
-    if (reduce) draw(performance.now());
+    window.pipeProgress = progress;
   }
 
-  /* ---------- the flow canvas ---------- */
-  const cv = $('flow'), ctx = cv.getContext('2d');
-  let W = 0, H = 0;
-  const N = innerWidth < 720 ? 520 : 1100;
-  const P = Array.from({ length: N }, (_, i) => ({ a: Math.random(), b: Math.random(), c: Math.random(), d: Math.random(), lane: i % 9, px: null, py: null }));
-
-  function size() {
-    const dpr = Math.min(devicePixelRatio || 1, 2);
-    W = cv.clientWidth; H = cv.clientHeight;
-    cv.width = W * dpr; cv.height = H * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    for (const p of P) p.px = null;
-  }
-
-  let sp = 0;
-  function draw(now) {
-    const t = now / 1000;
-    sp = reduce ? progress : lerp(sp, progress, 0.08);
-    const phone = W < 720;
-    const cx = W * (phone ? 0.5 : 0.64), cy = H * (phone ? 0.34 : 0.42);
-    const R = Math.min(W, H);
-    // scatter → lanes → tunnel → converge
-    const wB = smooth(0.12, 0.3, sp), wC = smooth(0.36, 0.55, sp), wD = smooth(0.66, 0.84, sp);
-
-    if (reduce) { ctx.fillStyle = '#0a0c0f'; ctx.fillRect(0, 0, W, H); for (const p of P) p.px = null; }
-    else { ctx.fillStyle = 'rgba(10,12,15,0.2)'; ctx.fillRect(0, 0, W, H); }
-
-    const tunnel = wC * (1 - wD * 0.7);
-    if (tunnel > 0.01) {
-      ctx.lineWidth = 1;
-      for (let k = 0; k < 9; k++) {
-        const z = (k / 9 + t * 0.06) % 1, s = Math.pow(z, 2.2);
-        ctx.strokeStyle = `rgba(159,227,220,${(0.05 + 0.18 * z) * tunnel})`;
-        ctx.strokeRect(cx - R * 0.8 * s, cy - R * 0.5 * s, R * 1.6 * s, R * s);
-      }
-    }
-
-    const steps = reduce ? 2 : 1;
-    for (let pass = 0; pass < steps; pass++) {
-      const tt = t - (steps - 1 - pass) * 0.03;
-      for (const p of P) {
-        const ax = ((p.a + tt * (0.012 + p.c * 0.03)) % 1) * W * 1.1 - W * 0.05;
-        const ay = (p.b + Math.sin(tt * 0.7 + p.d * 6.28) * 0.012) * H;
-
-        const bx = ((p.a + tt * (0.05 + p.c * 0.05)) % 1) * W * 1.2 - W * 0.1;
-        const by = cy + (p.lane - 4) * H * 0.055 + (p.d - 0.5) * 6;
-
-        const z = (p.c + tt * 0.12) % 1, s = Math.pow(z, 2.2);
-        const per = p.a * 4, side = Math.floor(per), f = per - side;
-        const ex = side === 0 ? f - 0.5 : side === 1 ? 0.5 : side === 2 ? 0.5 - f : -0.5;
-        const ey = side === 0 ? -0.5 : side === 1 ? f - 0.5 : side === 2 ? 0.5 : 0.5 - f;
-        const tx = cx + ex * R * 1.6 * s, ty = cy + ey * R * s;
-
-        const u = (p.d + tt * 0.18) % 1, e = u * u, ang = p.a * Math.PI * 2;
-        const far = R * (0.9 + p.b * 0.9);
-        const bend = Math.sin(ang * 3 + p.c * 6) * R * 0.18 * (1 - e);
-        const dx = cx + Math.cos(ang) * far * (1 - e) - Math.sin(ang) * bend;
-        const dy = cy + Math.sin(ang) * far * 0.62 * (1 - e) + Math.cos(ang) * bend;
-
-        let x = lerp(ax, bx, wB), y = lerp(ay, by, wB);
-        x = lerp(x, tx, wC); y = lerp(y, ty, wC);
-        x = lerp(x, dx, wD); y = lerp(y, dy, wD);
-
-        if (p.px !== null && Math.hypot(x - p.px, y - p.py) < R * 0.06) {
-          const hot = wD * smooth(0.5, 1, e);
-          const alpha = clamp(0.3 + 0.55 * p.b + hot * 0.5);
-          const col = `rgba(${lerp(159, 255, hot) | 0},${lerp(227, 107, hot) | 0},${lerp(220, 44, hot) | 0},${alpha})`;
-          ctx.strokeStyle = col;
-          ctx.lineWidth = 0.6 + p.c * 0.9 + wC * s * 1.2;
-          ctx.beginPath(); ctx.moveTo(p.px, p.py); ctx.lineTo(x, y); ctx.stroke();
-          ctx.fillStyle = col;
-          ctx.fillRect(x - 0.9, y - 0.9, 1.8, 1.8);
-        }
-        p.px = x; p.py = y;
-      }
-    }
-
-    if (wD > 0.01) {
-      const k = R * 0.035 * wD * (reduce ? 1 : 1 + Math.sin(t * 2.4) * 0.06);
-      ctx.save();
-      ctx.shadowColor = 'rgba(255,107,44,0.9)'; ctx.shadowBlur = 40 * wD;
-      ctx.fillStyle = `rgba(255,107,44,${wD})`;
-      ctx.fillRect(cx - k, cy - k, k * 2, k * 2);
-      ctx.restore();
-      ctx.strokeStyle = `rgba(255,138,85,${0.6 * wD})`; ctx.lineWidth = 1;
-      ctx.strokeRect(cx - k * 1.8, cy - k * 1.8, k * 3.6, k * 3.6);
-    }
-  }
-
-  size();
-  addEventListener('resize', () => { size(); onScroll(); });
+  addEventListener('resize', onScroll);
   addEventListener('scroll', onScroll, { passive: true });
   onScroll();
-
-  if (reduce) draw(performance.now());
-  else {
-    let running = false;
-    const loop = now => { if (!running) return; draw(now); requestAnimationFrame(loop); };
-    new IntersectionObserver(([en]) => {
-      if (en.isIntersecting && !running) { running = true; requestAnimationFrame(loop); }
-      else if (!en.isIntersecting) running = false;
-    }).observe(pipe);
-  }
 
   /* ---------- reveals ---------- */
   const rv = new IntersectionObserver(es => es.forEach(en => {
@@ -681,6 +581,344 @@ app.use((req, res, next) =&gt;
     for (let i = 0; i < 5; i++) setTimeout(() => receive(last, false), reduce ? 0 : i * 110);
   });
 })();
+</script>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a)); return t * t * (3 - 2 * t); };
+const lerp = (a, b, t) => a + (b - a) * t;
+
+const canvas = document.getElementById('flow');
+const pipe = document.getElementById('pipe');
+const phone = () => innerWidth < 720;
+
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); }
+catch { canvas.remove(); throw new Error('WebGL unavailable'); }
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.localClippingEnabled = true;
+
+const BG = 0x0a0c0f;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(BG);
+scene.fog = new THREE.Fog(BG, 5, 16);
+const camera = new THREE.PerspectiveCamera(32, 1, 0.02, 60);
+
+/* ---------- lights: dark studio, cool rim, orange LED spill ---------- */
+scene.add(new THREE.HemisphereLight(0x9fb3c8, 0x050607, 0.35));
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(3, 5, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+Object.assign(key.shadow.camera, { left: -2, right: 2, top: 3, bottom: -1, near: 1, far: 15 });
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x9fe3dc, 1.6);
+rim.position.set(-3.5, 3, -4);
+scene.add(rim);
+const spill = new THREE.PointLight(0xff6b2c, 2.2, 2.6, 2);
+spill.position.set(0.25, 0.9, 1.0);
+scene.add(spill);
+
+/* ---------- the rack: one 42U cabinet, built from boxes ---------- */
+const U = 0.0445, RW = 0.6, RD = 1.0, BASE = 0.08;
+const RH = BASE + 42 * U + 0.05;
+const parts = { frame: [], body: [], face: [], dark: [], ledO: [], ledT: [] };
+const box = (kind, w, h, d, x, y, z) => parts[kind].push(new THREE.BoxGeometry(w, h, d).translate(x, y, z));
+
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) box('frame', 0.035, RH, 0.035, sx * (RW / 2 - 0.0175), RH / 2, sz * (RD / 2 - 0.0175));
+box('frame', RW, 0.05, RD, 0, RH - 0.025, 0);
+box('frame', RW, BASE, RD, 0, BASE / 2, 0);
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) box('frame', 0.012, RH - BASE - 0.05, 0.05, sx * (RW / 2 - 0.05), BASE + (RH - BASE - 0.05) / 2, sz * (RD / 2 - 0.07));
+
+const layout = [2, 1, 1, 0, 2, 2, 1, 4, 0, 1, 1, 2, 2, 0, 4, 1, 1, 2, 1, 0, 2, 2, 1, 1];
+const servers = [];
+let u = 1;
+const SW = RW - 0.11, FZ = RD / 2 - 0.06;
+for (const h of layout) {
+  if (u >= 41) break;
+  if (h === 0) { u += 1; continue; }
+  const hh = h * U - 0.004, y = BASE + (u - 1) * U + (h * U) / 2;
+  servers.push({ y, h });
+  box('body', SW - 0.01, hh - 0.004, RD - 0.16, 0, y, -0.02);
+  box('face', SW, hh, 0.014, 0, y, FZ);
+  for (const sx of [-1, 1]) box('face', 0.022, hh, 0.02, sx * (SW / 2 + 0.006), y, FZ + 0.006);
+  if (h >= 2) {
+    const rows = Math.min(h, 3), cols = 8, bw = 0.042, bh = (hh - 0.012) / rows - 0.004;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+      box('dark', bw, bh, 0.006, -SW / 2 + 0.05 + c * (bw + 0.006) + bw / 2, y - hh / 2 + 0.008 + r * (bh + 0.004) + bh / 2, FZ + 0.009);
+  } else {
+    box('dark', SW * 0.52, hh * 0.5, 0.006, -SW * 0.12, y, FZ + 0.009);
+  }
+  box('ledO', SW * 0.28, 0.0035, 0.004, SW / 2 - 0.03 - SW * 0.14, y - hh / 2 + 0.006, FZ + 0.01);
+  box('ledT', 0.007, 0.007, 0.004, SW / 2 - 0.02, y + hh / 2 - 0.01, FZ + 0.01);
+  if ((u * 7) % 3) box('ledT', 0.007, 0.007, 0.004, SW / 2 - 0.034, y + hh / 2 - 0.01, FZ + 0.01);
+  u += h;
+}
+for (let k = 0; k < 6; k++) box('face', SW, U - 0.004, 0.01, 0, BASE + (40 + (k % 2)) * U, FZ - 0.002 - k * 0.0001);
+
+const solidClip = new THREE.Plane(new THREE.Vector3(0, -1, 0), RH + 0.1);
+const lineClip = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(RH + 0.1));
+const std = (color, metalness, roughness) => new THREE.MeshStandardMaterial({ color, metalness, roughness, clippingPlanes: [solidClip] });
+const mats = {
+  frame: std(0x15181d, 0.75, 0.38),
+  body: std(0x1d2128, 0.6, 0.5),
+  face: std(0x3a414b, 0.62, 0.32),
+  dark: std(0x07080a, 0.3, 0.75),
+  ledO: new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff6b2c).multiplyScalar(5), toneMapped: false }),
+  ledT: new THREE.MeshBasicMaterial({ color: new THREE.Color(0x9fe3dc).multiplyScalar(2.2), toneMapped: false }),
+};
+const rack = new THREE.Group();
+const edgeSrc = [];
+for (const [kind, geos] of Object.entries(parts)) {
+  const mesh = new THREE.Mesh(mergeGeometries(geos), mats[kind]);
+  mesh.castShadow = mesh.receiveShadow = kind !== 'ledO' && kind !== 'ledT';
+  rack.add(mesh);
+  if (kind !== 'ledO' && kind !== 'ledT') for (const g of geos) edgeSrc.push(new THREE.EdgesGeometry(g));
+}
+const lineMat = new THREE.LineBasicMaterial({ color: 0x9fe3dc, transparent: true, opacity: 0, clippingPlanes: [lineClip], depthWrite: false });
+rack.add(new THREE.LineSegments(mergeGeometries(edgeSrc), lineMat));
+scene.add(rack);
+
+// the scan beam that turns metal into lines
+const M = 0.06;
+const ringGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(-RW / 2 - M, 0, -RD / 2 - M), new THREE.Vector3(RW / 2 + M, 0, -RD / 2 - M),
+  new THREE.Vector3(RW / 2 + M, 0, RD / 2 + M), new THREE.Vector3(-RW / 2 - M, 0, RD / 2 + M),
+]);
+const ringMat = new THREE.LineBasicMaterial({ color: new THREE.Color(0xff6b2c).multiplyScalar(4), transparent: true, opacity: 0, toneMapped: false });
+const ring = new THREE.LineLoop(ringGeo, ringMat);
+scene.add(ring);
+const sheetMat = new THREE.MeshBasicMaterial({ color: 0xff6b2c, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+const sheet = new THREE.Mesh(new THREE.PlaneGeometry(RW + 2 * M, RD + 2 * M).rotateX(-Math.PI / 2), sheetMat);
+scene.add(sheet);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x0d1013, roughness: 0.92, metalness: 0.1 }));
+floor.receiveShadow = true;
+scene.add(floor);
+
+/* ---------- the way in: one server's slot opens into a tunnel ---------- */
+const target = servers.reduce((a, s) => (s.h >= 2 && Math.abs(s.y - 1.05) < Math.abs(a.y - 1.05) ? s : a), servers[0]);
+const YC = target.y, CORE_Z = -12;
+const slotW = SW * 0.9, slotH = target.h * U * 0.8;
+const sizeAt = z => {
+  const g = smooth(0.3, -3.2, z), c = smooth(-8.5, -11.6, z);
+  return [lerp(slotW, 4.2, g) * lerp(1, 0.08, c), lerp(slotH, 2.5, g) * lerp(1, 0.08, c)];
+};
+
+const tunnelPts = [];
+for (let z = FZ; z > CORE_Z + 0.4; z -= 0.32) {
+  const [w, h] = sizeAt(z);
+  const c = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]];
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = c[i], [bx, by] = c[(i + 1) % 4];
+    tunnelPts.push(ax, YC + ay, z, bx, YC + by, z);
+  }
+}
+for (let k = 0; k < 16; k++) {
+  const side = k % 4, f = Math.floor(k / 4) / 4;
+  for (let z = FZ; z > CORE_Z + 0.7; z -= 0.32) {
+    const pt = zz => {
+      const [w, h] = sizeAt(zz);
+      const ex = side === 0 ? f - 0.5 : side === 1 ? 0.5 : side === 2 ? 0.5 - f : -0.5;
+      const ey = side === 0 ? -0.5 : side === 1 ? f - 0.5 : side === 2 ? 0.5 : 0.5 - f;
+      return [ex * w, YC + ey * h, zz];
+    };
+    tunnelPts.push(...pt(z), ...pt(z - 0.32));
+  }
+}
+const tunnelGeo = new THREE.BufferGeometry();
+tunnelGeo.setAttribute('position', new THREE.Float32BufferAttribute(tunnelPts, 3));
+const tunnelMat = new THREE.LineBasicMaterial({ color: 0x9fe3dc, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending });
+scene.add(new THREE.LineSegments(tunnelGeo, tunnelMat));
+
+// packets: every event racing toward the ledger
+const NP = phone() ? 700 : 1600;
+const pk = Array.from({ length: NP }, () => {
+  const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random());
+  return { ox: Math.cos(a) * r, oy: Math.sin(a) * r * 0.9, ph: Math.random(), sp: 0.05 + Math.random() * 0.07, len: 0.12 + Math.random() * 0.35, sw: Math.random() * 6.28 };
+});
+const pPos = new Float32Array(NP * 6), pCol = new Float32Array(NP * 6);
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+pGeo.setAttribute('color', new THREE.BufferAttribute(pCol, 3));
+const pMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+const packets = new THREE.LineSegments(pGeo, pMat);
+packets.frustumCulled = false;
+scene.add(packets);
+const TEAL = new THREE.Color(0x9fe3dc).multiplyScalar(1.1), ORANGE = new THREE.Color(0xff6b2c).multiplyScalar(1.6);
+const tmp = new THREE.Color();
+const L = FZ - CORE_Z;
+function packetAt(p, z, t, out, o) {
+  const [w, h] = sizeAt(z);
+  const c = smooth(-7.5, CORE_Z, z);
+  const a = c * 1.3;
+  const rx = p.ox * Math.cos(a) - p.oy * Math.sin(a);
+  const ry = p.ox * Math.sin(a) + p.oy * Math.cos(a);
+  out[o] = rx * w * 0.5; out[o + 1] = YC + ry * h * 0.5; out[o + 2] = z;
+  return c;
+}
+function updatePackets(t, camZ) {
+  for (let i = 0; i < NP; i++) {
+    const p = pk[i];
+    const z = FZ - ((p.ph + t * p.sp) % 1) * L;
+    if (z > camZ - 0.9) { pPos.fill(0, i * 6, i * 6 + 6); pCol.fill(0, i * 6, i * 6 + 6); continue; }
+    packetAt(p, z, t, pPos, i * 6);
+    const c = packetAt(p, Math.min(FZ, z + p.len), t, pPos, i * 6 + 3);
+    tmp.copy(TEAL).lerp(ORANGE, c * c);
+    pCol.set([tmp.r, tmp.g, tmp.b, tmp.r * 0.15, tmp.g * 0.15, tmp.b * 0.15], i * 6);
+  }
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.color.needsUpdate = true;
+}
+
+const glowTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  r.addColorStop(0, 'rgba(255,150,90,1)'); r.addColorStop(0.18, 'rgba(255,107,44,0.6)'); r.addColorStop(0.5, 'rgba(255,90,30,0.12)'); r.addColorStop(1, 'rgba(255,90,30,0)');
+  g.fillStyle = r; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+})();
+const haloMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+const halo = new THREE.Sprite(haloMat);
+halo.position.set(0, YC, CORE_Z - 0.05);
+halo.scale.setScalar(1.1);
+scene.add(halo);
+const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.15, 0.36, 0.1), toneMapped: false, transparent: true, opacity: 0 });
+const core = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.16), coreMat);
+core.position.set(0, YC, CORE_Z);
+scene.add(core);
+const coreEdgeMat = new THREE.LineBasicMaterial({ color: new THREE.Color(0xff8a55).multiplyScalar(2), transparent: true, opacity: 0, toneMapped: false });
+const coreEdge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.34, 0.34, 0.34)), coreEdgeMat);
+coreEdge.position.copy(core.position);
+scene.add(coreEdge);
+
+/* ---------- camera path, keyed to the five chapters ---------- */
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const keys = [
+  [0.00, V(3.3, 1.7, 4.1), V(0, 0.95, 0)],
+  [0.18, V(2.8, 1.5, 3.7), V(0, 0.98, 0)],
+  [0.36, V(1.7, 1.25, 2.7), V(0, 1.02, 0)],
+  [0.50, V(0.0, YC, 1.25), V(0, YC, 0)],
+  [0.60, V(0.0, YC, FZ - 0.25), V(0, YC, -4)],
+  [0.80, V(0.0, YC, -5.8), V(0, YC, CORE_Z)],
+  [1.00, V(0.0, YC, CORE_Z + 2.7), V(0, YC, CORE_Z)],
+];
+const posCurve = new THREE.CatmullRomCurve3(keys.map(k => k[1]), false, 'centripetal');
+const lookCurve = new THREE.CatmullRomCurve3(keys.map(k => k[2]), false, 'centripetal');
+const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+function cameraAt(p, t) {
+  let i = 0;
+  while (i < keys.length - 2 && p > keys[i + 1][0]) i++;
+  const lt = smooth(0, 1, (p - keys[i][0]) / (keys[i + 1][0] - keys[i][0]));
+  const u = (i + lt) / (keys.length - 1);
+  posCurve.getPoint(u, camPos);
+  lookCurve.getPoint(u, camLook);
+  const idle = (1 - smooth(0.25, 0.45, p)) * (reduce ? 0 : 1);
+  if (idle > 0) {
+    const a = Math.sin(t * 0.18) * 0.12 * idle;
+    const x = camPos.x, z = camPos.z;
+    camPos.x = x * Math.cos(a) - z * Math.sin(a);
+    camPos.z = x * Math.sin(a) + z * Math.cos(a);
+    camPos.y += Math.sin(t * 0.31) * 0.03 * idle;
+  }
+  camera.position.copy(camPos);
+  camera.lookAt(camLook);
+}
+
+/* ---------- post: bloom for the LEDs and the core ---------- */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.85, 0.55, 0.9);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+let W = 0, H = 0;
+function resize() {
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  renderer.setSize(W, H, false);
+  composer.setSize(W, H);
+  bloom.resolution.set(W / 2, H / 2);
+  camera.aspect = W / H;
+  camera.fov = phone() ? 46 : 32;
+  camera.updateProjectionMatrix();
+}
+
+/* ---------- one frame ---------- */
+let sp = 0;
+function render(now) {
+  const t = now / 1000;
+  const target = window.pipeProgress || 0;
+  sp = reduce ? target : lerp(sp, target, 0.07);
+  const p = sp;
+
+  // 1. solid → 2. scan into lines
+  const scan = smooth(0.2, 0.38, p);
+  const sy = lerp(RH + 0.08, -0.06, scan);
+  solidClip.constant = sy;
+  lineClip.constant = -sy;
+  const scanning = scan > 0.001 && scan < 0.999;
+  ring.position.y = sheet.position.y = sy;
+  ringMat.opacity = scanning ? 1 : 0;
+  sheetMat.opacity = scanning ? 0.08 : 0;
+  lineMat.opacity = 0.55 * (1 - smooth(0.56, 0.66, p));
+  spill.intensity = 2.2 * (1 - scan);
+  key.intensity = 2.4 * (1 - scan * 0.6);
+  floor.visible = p < 0.62;
+
+  // 3. into the slot  4. the tunnel  5. the core
+  tunnelMat.opacity = 0.32 * smooth(0.44, 0.56, p);
+  pMat.opacity = smooth(0.46, 0.6, p);
+  const coreOn = smooth(0.62, 0.86, p);
+  coreMat.opacity = coreEdgeMat.opacity = coreOn;
+  const pulse = reduce ? 1 : 1 + Math.sin(t * 2.4) * 0.06;
+  core.scale.setScalar(lerp(0.4, 1, coreOn) * pulse);
+  core.rotation.y = coreEdge.rotation.y = reduce ? 0.6 : t * 0.25;
+  coreEdge.rotation.x = reduce ? 0.4 : t * 0.17;
+  bloom.strength = lerp(0.75, 0.6, coreOn);
+  scene.fog.near = lerp(5, 1.5, smooth(0.45, 0.6, p));
+  scene.fog.far = lerp(16, 13, smooth(0.45, 0.6, p));
+  cameraAt(p, t);
+  updatePackets(reduce ? 3 : t, camera.position.z);
+  haloMat.opacity = 0.6 * coreOn * pulse;
+  // keep the object clear of the headline: right of it on desktop, above it on a phone
+  const shift = lerp(1, 0.75, smooth(0.42, 0.6, p));
+  if (phone()) camera.setViewOffset(W, H, 0, H * 0.17 * shift, W, H);
+  else camera.setViewOffset(W, H, -W * 0.25 * shift, -H * 0.04, W, H);
+
+  composer.render();
+}
+
+resize();
+addEventListener('resize', () => { resize(); render(performance.now()); });
+if (reduce) {
+  addEventListener('scroll', () => render(performance.now()), { passive: true });
+  render(performance.now());
+} else {
+  let running = false;
+  const loop = now => { if (!running) return; render(now); requestAnimationFrame(loop); };
+  new IntersectionObserver(([en]) => {
+    if (en.isIntersecting && !running) { running = true; requestAnimationFrame(loop); }
+    else if (!en.isIntersecting) running = false;
+  }).observe(pipe);
+}
 </script>
 </body>
 </html>
